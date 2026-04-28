@@ -1,0 +1,1692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>I&amp;R Monitoring Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f2f3f5;
+    --bg-tertiary: #e8eaed;
+    --text-primary: #1a1a18;
+    --text-secondary: #5a5a56;
+    --text-tertiary: #9a9a94;
+    --border-light: rgba(0,0,0,0.1);
+    --border-mid: rgba(0,0,0,0.18);
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --blue-50: #E6F1FB;
+    --blue-200: #85B7EB;
+    --blue-400: #378ADD;
+    --blue-600: #185FA5;
+    --green-50: #EAF3DE;
+    --green-400: #639922;
+    --green-600: #3B6D11;
+    --amber-100: #FAC775;
+    --amber-200: #EF9F27;
+    --amber-800: #633806;
+    --amber-900: #412402;
+    --turquoise-50: #e8f8f6;
+    --turquoise-200: #7dd3c4;
+    --turquoise-400: #14b8a6;
+    --turquoise-600: #0d9488;
+    --turquoise-700: #0f766e;
+    --panel-width: min(560px, 48vw);
+    /** Match SVG ocean fill (#map-stage) — keep in sync with MAP_OCEAN_FILL in script. */
+    --map-ocean-fill: #c4ddf0;
+    /** Subtle map dim when the side panel is open; strong values make the ocean read darker than the idle home view. */
+    --dim-overlay: rgba(0, 0, 0, 0.035);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  html, body { height: 100%; overflow: hidden; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  #app { display: flex; flex-direction: column; height: 100vh; min-height: 0; }
+
+  .toggle-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 13px;
+    border-radius: 20px;
+    border: 0.5px solid var(--border-mid);
+    background: transparent;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    font-family: inherit;
+  }
+  .toggle-btn:hover { background: var(--bg-secondary); }
+  .toggle-btn .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--border-mid);
+    transition: background 0.15s;
+    flex-shrink: 0;
+  }
+  .toggle-btn.active-radar { background: var(--blue-50); border-color: var(--blue-400); color: var(--blue-600); }
+  .toggle-btn.active-radar .dot { background: var(--blue-400); }
+  .toggle-btn.active-tasks { background: var(--green-50); border-color: var(--green-400); color: var(--green-600); }
+  .toggle-btn.active-tasks .dot { background: var(--green-400); }
+  .toggle-btn.active-watchpoints { background: var(--turquoise-50); border-color: var(--turquoise-400); color: var(--turquoise-700); }
+  .toggle-btn.active-watchpoints .dot { background: var(--turquoise-400); }
+
+  /* ── Main area ── */
+  #main { display: flex; flex: 1; min-height: 0; overflow: hidden; position: relative; }
+
+  #map-area {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg-tertiary);
+  }
+
+  /* Full-width header: title + toggles align to one grid; map sits flush below */
+  #map-ui-topleft {
+    flex: 0 0 auto;
+    position: relative;
+    z-index: 9;
+    width: 100%;
+    background: var(--bg-primary);
+    border-bottom: 0.5px solid var(--border-light);
+    box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+    pointer-events: auto;
+  }
+  .map-ui-inner {
+    max-width: 1320px;
+    margin: 0 auto;
+    padding: 16px 22px 18px;
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px 24px;
+  }
+  .map-ui-brand {
+    font-size: clamp(16px, 1.25vw, 20px);
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: 0.02em;
+    line-height: 1.25;
+    user-select: none;
+    flex: 1 1 auto;
+    min-width: 200px;
+  }
+  .map-ui-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+    flex: 1 1 280px;
+    min-width: 0;
+  }
+  .map-ui-actions .toggle-btn {
+    background: var(--bg-secondary);
+    flex-shrink: 0;
+    padding: 8px 14px 8px 12px;
+    font-size: clamp(12px, 1vw, 14px);
+    border-radius: 999px;
+    gap: 10px;
+    font-weight: 600;
+    transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  }
+  .map-ui-actions .toggle-btn .dot {
+    width: 9px;
+    height: 9px;
+    align-self: center;
+  }
+  .map-ui-actions .toggle-btn-body {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex: 1;
+    min-width: 0;
+  }
+  .map-ui-actions .toggle-btn-text {
+    min-width: 0;
+    line-height: 1.3;
+    text-align: left;
+  }
+  .map-ui-actions .toggle-btn-count {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.75em;
+    padding: 5px 10px;
+    border-radius: 999px;
+    font-size: clamp(11px, 0.88vw, 12.5px);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.72);
+    border: 0.5px solid rgba(0, 0, 0, 0.08);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.9) inset, 0 1px 2px rgba(0, 0, 0, 0.05);
+    transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+  }
+  .map-ui-actions .toggle-btn:hover .toggle-btn-count {
+    background: #fff;
+    border-color: rgba(0, 0, 0, 0.12);
+  }
+  .map-ui-actions .toggle-btn.active-radar .toggle-btn-count {
+    color: var(--blue-600);
+    background: rgba(255, 255, 255, 0.92);
+    border-color: rgba(55, 138, 221, 0.42);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.95) inset, 0 0 0 1px rgba(55, 138, 221, 0.12);
+  }
+  .map-ui-actions .toggle-btn.active-tasks .toggle-btn-count {
+    color: var(--green-600);
+    background: rgba(255, 255, 255, 0.92);
+    border-color: rgba(99, 153, 34, 0.45);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.95) inset, 0 0 0 1px rgba(99, 153, 34, 0.12);
+  }
+  .map-ui-actions .toggle-btn.active-watchpoints .toggle-btn-count {
+    color: var(--turquoise-700);
+    background: rgba(255, 255, 255, 0.92);
+    border-color: rgba(20, 184, 166, 0.45);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.95) inset, 0 0 0 1px rgba(20, 184, 166, 0.12);
+  }
+  .legend-count-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.5em;
+    margin-left: 6px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+    color: var(--text-secondary);
+    background: rgba(0, 0, 0, 0.05);
+    border: 0.5px solid var(--border-light);
+    vertical-align: middle;
+  }
+
+  /* Map canvas only — same tone family as ocean fill to avoid “random” grey bands */
+  #map-stage {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+    background: var(--map-ocean-fill);
+  }
+
+  #map-dim {
+    position: absolute;
+    inset: 0;
+    background: var(--dim-overlay);
+    pointer-events: none;
+    z-index: 2;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+  #map-dim.visible { opacity: 1; }
+
+  #map-container {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+  }
+  #map-container svg { display: block; width: 100%; height: 100%; }
+
+  #loading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-tertiary);
+    z-index: 12;
+    font-size: 12px;
+    color: #7a8f9e;
+  }
+
+  /* ── Side panel ── */
+  #side-panel {
+    width: 280px;
+    flex-shrink: 0;
+    background: var(--bg-primary);
+    border-left: 0.5px solid var(--border-light);
+    display: flex;
+    flex-direction: column;
+    position: absolute;
+    right: 0; top: 0; bottom: 0;
+    z-index: 6;
+    transform: translateX(100%);
+    transition: transform 0.25s ease, width 0.2s ease, box-shadow 0.2s ease;
+  }
+  #side-panel.open {
+    transform: translateX(0);
+    position: relative;
+    width: var(--panel-width);
+    min-width: 340px;
+    box-shadow: -6px 0 28px rgba(0,0,0,0.07);
+  }
+
+  #panel-header { padding: 16px 18px 10px; flex-shrink: 0; }
+  #panel-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+  #panel-count { font-size: 11px; color: var(--text-tertiary); margin-top: 4px; }
+
+  #panel-count.panel-count-summary {
+    color: var(--text-secondary);
+    line-height: 1.45;
+    max-width: 52ch;
+  }
+  #side-panel.open #panel-count.panel-count-summary { font-size: 13px; }
+
+  #side-panel.open #panel-title { font-size: 16px; }
+  #side-panel.open #panel-count { font-size: 13px; }
+
+  #panel-tabs {
+    display: flex;
+    border-bottom: 0.5px solid var(--border-light);
+    flex-shrink: 0;
+  }
+  .panel-tab {
+    flex: 1;
+    padding: 11px 0;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+    font-family: inherit;
+    background: none;
+    border-top: none;
+    border-left: none;
+    border-right: none;
+  }
+  #side-panel.open .panel-tab { font-size: 14px; padding: 12px 0; }
+  .panel-tab:hover { color: var(--text-primary); }
+  .panel-tab.active { color: var(--text-primary); border-bottom-color: var(--text-primary); }
+
+  #panel-list { flex: 1; overflow-y: auto; min-height: 0; }
+  #panel-list::-webkit-scrollbar { width: 5px; }
+  #panel-list::-webkit-scrollbar-track { background: transparent; }
+  #panel-list::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
+
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  .entry-card {
+    padding: 13px 18px;
+    cursor: pointer;
+    border-bottom: 0.5px solid var(--border-light);
+    transition: background 0.1s;
+  }
+  #side-panel.open .entry-card { padding: 15px 20px; }
+  .entry-card:hover { background: var(--bg-secondary); }
+  .entry-card.expanded { background: var(--bg-secondary); }
+
+  .entry-card.map-row-focus {
+    box-shadow: inset 3px 0 0 var(--blue-400);
+    background: var(--bg-secondary);
+  }
+  #panel-list[data-active-layer="tasks"] .entry-card.map-row-focus {
+    box-shadow: inset 3px 0 0 var(--green-400);
+  }
+  #panel-list[data-active-layer="watchpoints"] .entry-card.map-row-focus {
+    box-shadow: inset 3px 0 0 var(--turquoise-400);
+  }
+
+  .pill-watchpoint {
+    background: var(--turquoise-50);
+    color: var(--turquoise-700);
+    border: 0.5px solid rgba(20, 184, 166, 0.4);
+  }
+
+  .wp-pull {
+    display: flex;
+    gap: 12px;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 0.5px solid var(--border-light);
+  }
+  .wp-pull:first-child {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+  }
+  .wp-pull-handle {
+    width: 40px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: 6px;
+  }
+  .wp-pull-handle::before {
+    content: '';
+    width: 32px;
+    height: 5px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--turquoise-200), var(--turquoise-400));
+    box-shadow: 0 2px 8px rgba(13, 148, 136, 0.22);
+  }
+  .wp-pull-body { flex: 1; min-width: 0; }
+  .wp-indicators {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--turquoise-700);
+    line-height: 1.4;
+  }
+  #side-panel.open .wp-indicators { font-size: 12px; }
+  .wp-summary {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.55;
+    margin-top: 6px;
+  }
+  #side-panel.open .wp-summary { font-size: 14px; }
+
+  .wp-operational-cta {
+    margin-top: 4px;
+    padding: 16px 18px 20px;
+    border-top: 0.5px solid var(--border-light);
+    flex-shrink: 0;
+  }
+  #side-panel.open .wp-operational-cta {
+    padding: 18px 20px 22px;
+  }
+  .wp-operational-cta-link {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--turquoise-700);
+    text-decoration: none;
+    padding: 10px 14px;
+    border-radius: var(--radius-md);
+    border: 0.5px solid rgba(20, 184, 166, 0.45);
+    background: var(--turquoise-50);
+    line-height: 1.4;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
+  #side-panel.open .wp-operational-cta-link { font-size: 13px; padding: 12px 16px; }
+  .wp-operational-cta-link:hover {
+    background: #d4f5f0;
+    border-color: var(--turquoise-400);
+    color: var(--turquoise-600);
+  }
+  .wp-operational-cta-link:focus-visible {
+    outline: 2px solid var(--turquoise-400);
+    outline-offset: 2px;
+  }
+
+  .entry-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .entry-name { font-size: 13px; font-weight: 500; color: var(--text-primary); flex: 1; line-height: 1.45; }
+  #side-panel.open .entry-name { font-size: 15px; }
+
+  .pill {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 10px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  #side-panel.open .pill { font-size: 11px; }
+  .pill-light { background: var(--amber-100); color: var(--amber-800); }
+  .pill-active { background: var(--amber-200); color: var(--amber-900); }
+
+  .expand-arrow {
+    font-size: 9px;
+    color: var(--text-tertiary);
+    margin-top: 4px;
+    flex-shrink: 0;
+    transition: transform 0.15s;
+    user-select: none;
+  }
+  .expand-arrow.entry-expand-btn {
+    cursor: pointer;
+    padding: 4px 6px;
+    margin: -4px -6px -4px 0;
+    border-radius: var(--radius-sm);
+  }
+  .expand-arrow.entry-expand-btn:hover {
+    background: rgba(0,0,0,0.06);
+  }
+  .entry-card.expanded .expand-arrow { transform: rotate(180deg); }
+
+  .entry-geo { font-size: 11px; color: var(--text-tertiary); margin-top: 5px; }
+  #side-panel.open .entry-geo { font-size: 13px; }
+  .entry-detail {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 10px;
+    line-height: 1.6;
+    display: none;
+    border-top: 0.5px solid var(--border-light);
+    padding-top: 10px;
+  }
+  #side-panel.open .entry-detail { font-size: 14px; }
+  .entry-card.expanded .entry-detail { display: block; }
+
+  .entry-reading-heading {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-tertiary);
+    margin-top: 14px;
+    margin-bottom: 8px;
+  }
+  #side-panel.open .entry-reading-heading { font-size: 11px; }
+  .reading-list { list-style: none; padding: 0; margin: 0; }
+  .reading-list li { margin-bottom: 12px; }
+  .reading-list li:last-child { margin-bottom: 0; }
+  .reading-list a {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--blue-600);
+    text-decoration: none;
+  }
+  #side-panel.open .reading-list a { font-size: 14px; }
+  .reading-list a:hover { text-decoration: underline; }
+  .reading-meta {
+    display: block;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-top: 3px;
+  }
+  #side-panel.open .reading-meta { font-size: 12px; }
+  .reading-desc {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 5px;
+    line-height: 1.5;
+  }
+  #side-panel.open .reading-desc { font-size: 13px; }
+
+  .completed-card { padding: 13px 18px; border-bottom: 0.5px solid var(--border-light); }
+  #side-panel.open .completed-card { padding: 15px 20px; }
+  .completed-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .completed-name { font-size: 13px; font-weight: 500; color: var(--text-secondary); flex: 1; line-height: 1.45; }
+  #side-panel.open .completed-name { font-size: 15px; }
+  .completed-meta { font-size: 11px; color: var(--text-tertiary); margin-top: 5px; }
+  #side-panel.open .completed-meta { font-size: 13px; }
+
+  /* ── Map legend ── */
+  #map-legend {
+    position: absolute;
+    bottom: 16px;
+    left: 16px;
+    background: var(--bg-primary);
+    border: 0.5px solid var(--border-light);
+    border-radius: var(--radius-md);
+    padding: 10px 14px;
+    display: none;
+    z-index: 4;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.08);
+  }
+  #map-legend.visible { display: block; }
+  .legend-title {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+    margin-bottom: 8px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-secondary); margin-bottom: 6px; }
+  .legend-item:last-child { margin-bottom: 0; }
+  .legend-swatch { width: 16px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+  /* Map tooltip */
+  #map-tooltip {
+    position: fixed;
+    left: 0;
+    top: 0;
+    pointer-events: none;
+    z-index: 18;
+    max-width: min(300px, 90vw);
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: var(--bg-primary);
+    border: 0.5px solid var(--border-mid);
+    border-radius: var(--radius-md);
+    box-shadow: 0 8px 28px rgba(0,0,0,0.14);
+    line-height: 1.45;
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 0.08s ease;
+  }
+  #map-tooltip.visible { visibility: visible; opacity: 1; }
+  #map-tooltip .tip-line {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-primary);
+    line-height: 1.4;
+  }
+  #map-tooltip .tip-line + .tip-line { margin-top: 6px; }
+  #map-tooltip .tip-muted {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-top: 8px;
+    line-height: 1.45;
+  }
+  #map-tooltip .tip-detail { margin-top: 8px; }
+
+  /* Map zoom controls */
+  #map-zoom-controls {
+    position: absolute;
+    bottom: 16px;
+    right: 16px;
+    z-index: 8;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .zoom-ctrl-btn {
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 0.5px solid var(--border-mid);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+    font-size: 18px;
+    font-weight: 500;
+    line-height: 1;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-family: inherit;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+    transition: background 0.12s, color 0.12s;
+  }
+  .zoom-ctrl-btn:hover { background: var(--bg-secondary); color: var(--text-primary); }
+  .zoom-ctrl-btn#zoom-reset { font-size: 15px; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="main">
+    <div id="map-area">
+      <header id="map-ui-topleft">
+        <div class="map-ui-inner">
+          <div class="map-ui-brand">I&amp;R Monitoring Dashboard</div>
+          <div class="map-ui-actions">
+            <button type="button" class="toggle-btn" id="btn-radar" onclick="toggleLayer('radar')" aria-label="On radar">
+              <span class="dot" aria-hidden="true"></span>
+              <span class="toggle-btn-body">
+                <span class="toggle-btn-text">On radar</span>
+                <span class="toggle-btn-count" id="home-count-radar" aria-hidden="true"></span>
+              </span>
+            </button>
+            <button type="button" class="toggle-btn" id="btn-tasks" onclick="toggleLayer('tasks')" aria-label="Ongoing tasks">
+              <span class="dot" aria-hidden="true"></span>
+              <span class="toggle-btn-body">
+                <span class="toggle-btn-text">Ongoing tasks</span>
+                <span class="toggle-btn-count" id="home-count-tasks" aria-hidden="true"></span>
+              </span>
+            </button>
+            <button type="button" class="toggle-btn" id="btn-watchpoints" onclick="toggleLayer('watchpoints')" aria-label="Quarterly watchpoints">
+              <span class="dot" aria-hidden="true"></span>
+              <span class="toggle-btn-body">
+                <span class="toggle-btn-text">Quarterly watchpoints</span>
+                <span class="toggle-btn-count" id="home-count-watchpoints" aria-hidden="true"></span>
+              </span>
+            </button>
+          </div>
+        </div>
+      </header>
+      <div id="map-stage">
+        <div id="map-container"></div>
+        <div id="map-dim" aria-hidden="true"></div>
+        <div id="loading">Loading map&hellip;</div>
+        <div id="map-tooltip" role="tooltip"></div>
+        <div id="map-zoom-controls">
+          <button type="button" class="zoom-ctrl-btn" id="zoom-in" aria-label="Zoom in">+</button>
+          <button type="button" class="zoom-ctrl-btn" id="zoom-out" aria-label="Zoom out">&#8722;</button>
+          <button type="button" class="zoom-ctrl-btn" id="zoom-reset" aria-label="Reset map view">&#8635;</button>
+        </div>
+        <div id="map-legend">
+          <div class="legend-title">Map key</div>
+          <div class="legend-item" id="leg-radar" style="display:none">
+            <div class="legend-swatch" style="background:rgba(26,125,240,0.55);border:1px solid #1a7df0;"></div>
+            <span>On radar</span><span class="legend-count-pill" id="leg-count-radar" aria-hidden="true"></span>
+          </div>
+          <div class="legend-item" id="leg-tasks" style="display:none">
+            <div class="legend-swatch" style="background:rgba(66,179,10,0.55);border:1px solid #42b30a;"></div>
+            <span>Ongoing tasks</span><span class="legend-count-pill" id="leg-count-tasks" aria-hidden="true"></span>
+          </div>
+          <div class="legend-item" id="leg-watchpoints" style="display:none">
+            <div class="legend-swatch" style="background:rgba(0,181,152,0.5);border:1px solid #00b598;"></div>
+            <span>Quarterly watchpoints</span><span class="legend-count-pill" id="leg-count-watchpoints" aria-hidden="true"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <aside id="side-panel" aria-label="Details panel">
+      <div id="panel-header">
+        <div id="panel-title"></div>
+        <div id="panel-count"></div>
+      </div>
+
+      <div id="panel-list">
+        <div id="panel-tabs" style="display:none">
+          <button type="button" class="panel-tab active" onclick="switchTab('active')">Active</button>
+          <button type="button" class="panel-tab" onclick="switchTab('completed')">Completed</button>
+        </div>
+        <div id="tab-active" class="tab-content active"></div>
+        <div id="tab-completed" class="tab-content">
+          <div class="completed-card">
+            <div class="completed-top">
+              <div class="completed-name">Munich Security Conference 2026</div>
+              <span class="pill pill-light">Light monitoring</span>
+            </div>
+            <div class="completed-meta">Mar 2026 · Light monitoring — DIY dashboard</div>
+          </div>
+          <div class="completed-card">
+            <div class="completed-top">
+              <div class="completed-name">Uzbekistan — country risk snapshot Q1 2026</div>
+              <span class="pill pill-light">Light monitoring</span>
+            </div>
+            <div class="completed-meta">Apr 2026 · Light monitoring — Country risk assessment</div>
+          </div>
+          <div class="completed-card">
+            <div class="completed-top">
+              <div class="completed-name">Guatemala — State of Siege</div>
+              <span class="pill pill-light">Light monitoring</span>
+            </div>
+            <div class="completed-meta">Jan 2026 · Structured SPHERE analysis of Guatemala post-siege (light monitoring)</div>
+          </div>
+          <div class="completed-card">
+            <div class="completed-top">
+              <div class="completed-name">United States — ICE protests</div>
+              <span class="pill pill-light">Light monitoring</span>
+            </div>
+            <div class="completed-meta">Jan 2026 · Initial snapshot of surge in protest activity; recommendation on DIY monitoring dashboard (light monitoring)</div>
+          </div>
+          <div class="completed-card">
+            <div class="completed-top">
+              <div class="completed-name">Venezuela — Q1 snapshot</div>
+              <span class="pill pill-light">Light monitoring</span>
+            </div>
+            <div class="completed-meta">Mar 2026 · Light monitoring of security situation in Caracas</div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+const PDF_SEERIST = 'Seerist - Three short-term scenarios for trajectory of US-Israel-Iran military conflict.pdf';
+
+const DATA = {
+  radar: [
+    {
+      id: 'r1',
+      name: 'Cross-Strait dynamics',
+      geo: 'China, Taiwan',
+      intensity: 'light',
+      detail: 'Non-kinetic activities between PRC and Taiwan; monitoring grey-zone operations, political signalling, and military posture changes.',
+      iso: ['156','158'],
+      reading: [
+        {
+          title: 'Cross-Strait Monitoring Dashboard — Jan–Apr 2026',
+          href: 'https://nanyang-ai.github.io/X-Strait/',
+          meta: 'External · Live dashboard',
+          description: 'See monitoring dashboard for more details.'
+        }
+      ]
+    },
+    {
+      id: 'r2',
+      name: 'Global ripples from Middle East conflict',
+      geo: 'Iran, Israel, Lebanon, GCC',
+      intensity: 'light',
+      detail: 'Tracking second-order effects of US/Israel-Iran conflict including energy market disruption, shipping risks, and regional escalation dynamics.',
+      iso: ['364','376','422','682','784','414','634','048','512'],
+      reading: []
+    },
+    {
+      id: 'r3',
+      name: 'Ethiopia general elections',
+      geo: 'Ethiopia',
+      intensity: 'light',
+      detail: 'Track developments in the lead up to the election and discuss potential support with Geo lead',
+      iso: ['231'],
+      reading: []
+    },
+    {
+      id: 'r4',
+      name: 'US Hurricane Season',
+      geo: 'United States',
+      intensity: 'light',
+      detail: 'Discuss potential monitoring model',
+      iso: ['840'],
+      reading: []
+    }
+  ],
+  tasks: [
+    {
+      id: 't1',
+      name: 'Pakistan-Afghanistan tensions',
+      geo: 'Pakistan, Afghanistan',
+      intensity: 'active',
+      detail: 'DIY dashboard support for monitoring cross-border tensions, militant activity, and diplomatic developments between Islamabad and Kabul.',
+      iso: ['586','004'],
+      reading: []
+    },
+    {
+      id: 't2',
+      name: 'Middle East conflict',
+      geo: 'Iran, Israel, Lebanon, GCC countries',
+      intensity: 'active',
+      detail: 'Weekly indicator updates and dashboard maintenance covering conflict trajectory, Gulf Arab state exposure, and energy infrastructure risks.',
+      iso: ['364','376','422','682','784','414','634','048','512'],
+      reading: [
+        {
+          title: 'Three short-term scenarios: trajectory of US-Israel-Iran military conflict',
+          href: encodeURI(PDF_SEERIST),
+          meta: 'Seerist · PDF',
+          description: 'Scenarios for how the conflict could develop over the near term, including targeting patterns, retaliation dynamics, and Gulf Arab state exposure.'
+        }
+      ]
+    }
+  ],
+  watchpoints: [
+    {
+      id: 'qw-me',
+      name: 'Middle East conflict',
+      detail: 'A potential US-Iran ceasefire or further regional escalation would influence the conflict trajectory in the region.',
+      iso: ['364','376','422','682','784','414','634','048','512'],
+      bullets: [
+        {
+          indicators: ['Conflict & Terrorism', 'Interstate Tensions'],
+          text: 'A potential US-Iran ceasefire or further regional escalation would influence the conflict trajectory in the region.'
+        }
+      ]
+    },
+    {
+      id: 'qw-ve',
+      name: 'Venezuela',
+      detail: 'Security, regime stability, and US–Venezuela bilateral risk — monitor Caracas, Miranda, sanctions policy, and diplomatic compliance.',
+      iso: ['862'],
+      bullets: [
+        {
+          indicators: ['Conflict & Terrorism'],
+          text: 'Pro-government colectivos remain armed and active — further US military activity or opposition escalation would trigger immediate security deterioration. Caracas and Miranda carry the highest exposure.'
+        },
+        {
+          indicators: ['Regime Instability'],
+          text: 'The emergency decree has not been lifted and the required presidential election timeline has not been met. A breakdown in US-Rodríguez engagement would push conditions toward a deeper crisis.'
+        },
+        {
+          indicators: ['Interstate Tensions'],
+          text: 'The bilateral is one incident away from full re-rupture — monitor US policy decisions on Venezuela sanctions and Venezuela’s compliance with the Rubio diplomatic framework.'
+        }
+      ]
+    },
+    {
+      id: 'qw-th',
+      name: 'Thailand',
+      detail: 'Coalition stability and Thailand–Cambodia border risk through Q2.',
+      iso: ['764'],
+      bullets: [
+        {
+          indicators: ['Regime Instability'],
+          text: 'The Anutin government holds a slim parliamentary majority through a multi-party coalition with divergent interests — a confidence vote or coalition fracture in Q2 could reverse current stability.'
+        },
+        {
+          indicators: ['Interstate Tensions'],
+          text: 'The Cambodia ceasefire has not been formalised into a comprehensive border agreement — minor violations were recorded in Q1 and a breakdown would trigger an immediate escalation.'
+        }
+      ]
+    },
+    {
+      id: 'qw-bd',
+      name: 'Bangladesh',
+      detail: 'Democratic transition, coalition cohesion, and institutional reform under the new government.',
+      iso: ['050'],
+      bullets: [
+        {
+          indicators: ['Regime Instability'],
+          text: 'The democratic transition remains fragile — monitor BNP coalition cohesion and whether former regime-aligned security forces are fully integrated under civilian command.'
+        },
+        {
+          indicators: ['Rule of Law'],
+          text: 'Institutional reform requires consistent follow-through — monitor for backsliding on judicial independence or press freedom as the new government consolidates.'
+        }
+      ]
+    }
+  ]
+};
+
+/** Fills header toggle and map-legend counts from DATA (run after DOM exists). */
+function updateHomeLayerCounts() {
+  const rows = [
+    { layer: 'radar', btn: 'btn-radar', home: 'home-count-radar', leg: 'leg-count-radar', label: 'On radar' },
+    { layer: 'tasks', btn: 'btn-tasks', home: 'home-count-tasks', leg: 'leg-count-tasks', label: 'Ongoing tasks' },
+    { layer: 'watchpoints', btn: 'btn-watchpoints', home: 'home-count-watchpoints', leg: 'leg-count-watchpoints', label: 'Quarterly watchpoints' }
+  ];
+  rows.forEach(({ layer, btn, home, leg, label }) => {
+    const n = DATA[layer].length;
+    const suffix = n === 1 ? ' item' : ' items';
+    const homeEl = document.getElementById(home);
+    const btnEl = document.getElementById(btn);
+    const legEl = document.getElementById(leg);
+    if (homeEl) homeEl.textContent = String(n);
+    if (btnEl) btnEl.setAttribute('aria-label', label + ', ' + n + suffix);
+    if (legEl) legEl.textContent = String(n);
+  });
+}
+
+/** @type {null | 'radar' | 'tasks' | 'watchpoints'} */
+let activeView = null;
+/** When set, map highlights this row’s ISOs (expanded list item for radar, tasks, or watchpoints). */
+let focusedItemId = null;
+let countryPaths = null;
+/** Cached map layers for resize refit without reloading data */
+let mapCtx = null;
+/** UN M49 (3-digit) → display name, from country-codes dataset */
+let countryNamesByIso3Digit = {};
+let mapZoomBehavior = null;
+const COUNTRY_CODES_CSV = 'https://raw.githubusercontent.com/datasets/country-codes/master/data/country-codes.csv';
+/** Larger divisor = smaller globe relative to the map stage. */
+const MAP_SCALE_DIVISOR = 8.45;
+/** Ocean — clearly blue vs land so the globe doesn’t read as one grey wash. */
+const MAP_OCEAN_FILL = '#c4ddf0'; /* keep in sync with :root --map-ocean-fill */
+/** Slightly lighter ocean when a list row is focused — whole globe recedes together. */
+const MAP_OCEAN_FILL_RECESS = '#d8e8f5';
+/** Default & neutral land (idle and “outside” countries when a layer is on). */
+const MAP_LAND_NEUTRAL = '#dde8f1';
+/** Neutral land when a row is focused — same hue family as idle, lighter / washed. */
+const MAP_LAND_NEUTRAL_RECESS = '#eef2f7';
+/** Ghost land under country fills (idle). */
+const MAP_GHOST_FILL = '#d0dde8';
+/** Ghost land when a row is focused — blends with recessed neutrals. */
+const MAP_GHOST_FILL_RECESS = '#e4ebf3';
+
+function applyMapOceanFill() {
+  if (!mapCtx || !mapCtx.oceanRect || !mapCtx.spherePath) return;
+  const ocean = mapCtx.focusBackdropRecessed ? MAP_OCEAN_FILL_RECESS : MAP_OCEAN_FILL;
+  mapCtx.oceanRect.attr('fill', ocean);
+  mapCtx.spherePath.attr('fill', ocean);
+}
+
+/** One coast outline for every country (same hue family); still softer than ink, but visible at default zoom. */
+const MAP_GEO_OUTLINE_STROKE = '#8aa3b4';
+const MAP_GEO_OUTLINE_WIDTH = 0.38;
+/** Internal borders — same weight as coast so archipelagos don’t look heavier. */
+const MAP_MESH_STROKE = '#87a0b2';
+const MAP_MESH_STROKE_RECESS = '#a3b3c2';
+const MAP_MESH_WIDTH = 0.4;
+const MAP_SPHERE_RING_STROKE = '#7a95a8';
+const MAP_SPHERE_RING_STROKE_RECESS = '#95a8b7';
+const MAP_SPHERE_RING_WIDTH = 0.68;
+/** Softer country outlines when the map is in row-focus mode (peers + neutrals). */
+const MAP_GEO_OUTLINE_STROKE_RECESS = '#c4d0db';
+/** Darker coast on focused geographies when a row is expanded — pops against recessed outlines. */
+const MAP_GEO_OUTLINE_STROKE_SELECTION = '#5a6f82';
+
+/** When a map row is expanded: ocean, ghost, mesh, and sphere ring all step lighter so the globe recedes behind the focus. */
+function syncMapFocusBackdrop(recessed) {
+  if (!mapCtx) return;
+  mapCtx.focusBackdropRecessed = !!recessed;
+  applyMapOceanFill();
+  const ghostFill = recessed ? MAP_GHOST_FILL_RECESS : MAP_GHOST_FILL;
+  mapCtx.ghostG.selectAll('path').attr('fill', ghostFill);
+  mapCtx.bordersPath.attr('stroke', recessed ? MAP_MESH_STROKE_RECESS : MAP_MESH_STROKE);
+  if (mapCtx.sphereTopOutline) {
+    mapCtx.sphereTopOutline.attr('stroke', recessed ? MAP_SPHERE_RING_STROKE_RECESS : MAP_SPHERE_RING_STROKE);
+  }
+}
+
+let mapRebuildTimer = null;
+
+function refitMapFromLayout() {
+  if (!mapCtx || !countryPaths) return;
+  const container = document.getElementById('map-container');
+  const w = container.offsetWidth || window.innerWidth;
+  const h = container.offsetHeight || window.innerHeight;
+  const { projection, path, oceanRect, spherePath, sphereTopOutline, ghostG, bordersPath, bordersMesh } = mapCtx;
+  projection.scale(w / MAP_SCALE_DIVISOR).translate([w / 2, h / 2 + 14]);
+  path.projection(projection);
+  oceanRect.attr('x', -w).attr('y', -h).attr('width', w * 3).attr('height', h * 3);
+  spherePath.attr('d', path({ type: 'Sphere' }));
+  if (sphereTopOutline) sphereTopOutline.attr('d', path({ type: 'Sphere' }));
+  ghostG.selectAll('path').attr('d', path);
+  countryPaths.attr('d', path);
+  bordersPath.attr('d', path(bordersMesh));
+  applyMapOceanFill();
+  bindCountryTooltips();
+}
+
+const MAP_FOCUS_ZOOM_MS = 480;
+const MAP_ZOOM_RESET_MS = 300;
+
+function resetMapZoom(duration) {
+  if (!mapCtx || !mapCtx.svg || !mapCtx.zoom) return;
+  const d = typeof duration === 'number' ? duration : MAP_ZOOM_RESET_MS;
+  const svg = mapCtx.svg;
+  const zoom = mapCtx.zoom;
+  if (d <= 0) svg.call(zoom.transform, d3.zoomIdentity);
+  else svg.transition().duration(d).ease(d3.easeCubicInOut).call(zoom.transform, d3.zoomIdentity);
+}
+
+/**
+ * Zoom the map layer toward the projected bounds of the given UN M49 numeric country codes.
+ * Uses a moderate scale cap so large multi-country lines get a gentle nudge, not a jarring jump.
+ */
+function zoomMapToFocusIsos(isoCodes, options) {
+  if (!mapCtx || !mapCtx.svg || !mapCtx.zoom || !mapCtx.path || !mapCtx.countryFeatures) return;
+  const duration = options && typeof options.duration === 'number' ? options.duration : MAP_FOCUS_ZOOM_MS;
+  const isoSet = new Set(isoCodes.map(id => String(id).padStart(3, '0')));
+  const features = mapCtx.countryFeatures.filter(f => isoSet.has(String(f.id).padStart(3, '0')));
+  if (!features.length) return;
+
+  const fc = { type: 'FeatureCollection', features };
+  const container = document.getElementById('map-container');
+  const w = container.offsetWidth || window.innerWidth;
+  const h = container.offsetHeight || window.innerHeight;
+  const [[x0, y0], [x1, y1]] = mapCtx.path.bounds(fc);
+  const dx = Math.max(6, x1 - x0);
+  const dy = Math.max(6, y1 - y0);
+  const cx = (x0 + x1) / 2;
+  const cy = (y0 + y1) / 2;
+  const kRaw = 0.86 / Math.max(dx / w, dy / h);
+  const k = Math.min(2.5, Math.max(1.14, kRaw * 0.56));
+  const tx = w / 2 - k * cx;
+  const ty = h / 2 - k * cy;
+  const svg = mapCtx.svg;
+  const zoom = mapCtx.zoom;
+  const t = d3.zoomIdentity.translate(tx, ty).scale(k);
+  if (duration <= 0) svg.call(zoom.transform, t);
+  else svg.transition().duration(duration).ease(d3.easeCubicInOut).call(zoom.transform, t);
+}
+
+function scheduleMapRebuild() {
+  if (mapRebuildTimer) clearTimeout(mapRebuildTimer);
+  mapRebuildTimer = setTimeout(() => {
+    mapRebuildTimer = null;
+    const mc = document.getElementById('map-container');
+    if (!mc) return;
+    if (mapCtx && countryPaths) {
+      refitMapFromLayout();
+      if (activeView === 'radar' || activeView === 'tasks' || activeView === 'watchpoints') {
+        paintLayerOnMap(activeView, { zoomAnimation: false });
+      }
+      return;
+    }
+    mc.innerHTML = '';
+    document.getElementById('loading').style.display = 'flex';
+    initMap().then(() => {
+      if (activeView === 'radar' || activeView === 'tasks' || activeView === 'watchpoints') {
+        paintLayerOnMap(activeView, { zoomAnimation: false });
+      }
+    });
+  }, 60);
+}
+
+function ingestCountryCodeRows(rows) {
+  countryNamesByIso3Digit = {};
+  if (!rows || !rows.length) return;
+  rows.forEach(r => {
+    const raw = r['ISO3166-1-numeric'];
+    if (raw === undefined || raw === null || String(raw).trim() === '') return;
+    const num = parseInt(String(raw).trim(), 10);
+    if (Number.isNaN(num)) return;
+    const key = String(num).padStart(3, '0');
+    const name = (r['CLDR display name'] || r['official_name_en'] || '').trim();
+    if (name) countryNamesByIso3Digit[key] = name;
+  });
+}
+
+function getCountryLabel(isoKey) {
+  return countryNamesByIso3Digit[isoKey] || ('Territory ' + isoKey);
+}
+
+function buildCountryTooltipHtml(isoKey) {
+  const country = escapeHtml(getCountryLabel(isoKey));
+
+  if (activeView !== 'radar' && activeView !== 'tasks' && activeView !== 'watchpoints') {
+    return '<div class="tip-line">' + country + '</div>' +
+      '<div class="tip-muted">Choose <strong>On radar</strong>, <strong>Ongoing tasks</strong>, or <strong>Quarterly watchpoints</strong>. Covered territories show as <strong>Country - line name</strong> with summary below.</div>';
+  }
+
+  let hits = DATA[activeView].filter(item => item.iso.includes(isoKey));
+
+  if (focusedItemId) {
+    hits = hits.filter(h => h.id === focusedItemId);
+    if (!hits.length) {
+      const focusItem = DATA[activeView].find(i => i.id === focusedItemId);
+      const fname = focusItem ? focusItem.name : 'this line';
+      return '<div class="tip-line">' + country + '</div>' +
+        '<div class="tip-muted">Not part of <strong>' + escapeHtml(fname) + '</strong>. Click another monitoring line in the list to refocus the map.</div>';
+    }
+  }
+
+  if (!hits.length) {
+    return '<div class="tip-line">' + country + '</div>' +
+      '<div class="tip-muted">No item in the current view includes this territory.</div>';
+  }
+
+  const linesHtml = hits.map(h =>
+    '<div class="tip-line">' + country + ' - ' + escapeHtml(h.name) + '</div>'
+  ).join('');
+
+  const detailBlocks = [];
+  const seenDetail = new Set();
+  hits.forEach(h => {
+    if (!seenDetail.has(h.detail)) {
+      seenDetail.add(h.detail);
+      detailBlocks.push(h.detail);
+    }
+  });
+  let detailText = detailBlocks.join(' ');
+  if (detailText.length > 320) detailText = detailText.slice(0, 317) + '…';
+
+  return linesHtml + '<div class="tip-muted tip-detail">' + escapeHtml(detailText) + '</div>';
+}
+
+function moveMapTooltip(event) {
+  const tip = document.getElementById('map-tooltip');
+  const padX = 14;
+  const padY = 14;
+  requestAnimationFrame(() => {
+    const tw = tip.offsetWidth || 240;
+    const th = tip.offsetHeight || 100;
+    let x = event.clientX + padX;
+    let y = event.clientY + padY;
+    if (x + tw > window.innerWidth - 8) x = Math.max(8, window.innerWidth - tw - 8);
+    if (y + th > window.innerHeight - 8) y = Math.max(8, event.clientY - th - 8);
+    tip.style.left = x + 'px';
+    tip.style.top = y + 'px';
+  });
+}
+
+function hideMapTooltip() {
+  const tip = document.getElementById('map-tooltip');
+  tip.classList.remove('visible');
+}
+
+function bindCountryTooltips() {
+  if (!countryPaths) return;
+  const tip = document.getElementById('map-tooltip');
+  countryPaths
+    .on('mouseenter', null)
+    .on('mousemove', null)
+    .on('mouseleave', null)
+    .style('cursor', 'pointer')
+    .on('mouseenter', function(event, d) {
+      const iso = String(d.id).padStart(3, '0');
+      tip.innerHTML = buildCountryTooltipHtml(iso);
+      tip.classList.add('visible');
+      moveMapTooltip(event);
+    })
+    .on('mousemove', function(event) {
+      moveMapTooltip(event);
+    })
+    .on('mouseleave', function() {
+      hideMapTooltip();
+    });
+}
+
+function wireMapZoomControls(svg, zoom) {
+  d3.select('#zoom-in').on('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    svg.transition().duration(200).call(zoom.scaleBy, 1.35);
+  });
+  d3.select('#zoom-out').on('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    svg.transition().duration(200).call(zoom.scaleBy, 1 / 1.35);
+  });
+  d3.select('#zoom-reset').on('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    svg.transition().duration(280).call(zoom.transform, d3.zoomIdentity);
+  });
+}
+
+function escapeHtml(str) {
+  if (str == null) return '';
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+function readingBlock(item) {
+  if (!item.reading || !item.reading.length) return '';
+  const lis = item.reading.map(r =>
+    '<li>' +
+      '<a href="' + escapeHtml(r.href) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(r.title) + '</a>' +
+      (r.meta ? '<span class="reading-meta">' + escapeHtml(r.meta) + '</span>' : '') +
+      (r.description ? '<p class="reading-desc">' + escapeHtml(r.description) + '</p>' : '') +
+    '</li>'
+  ).join('');
+  return (
+    '<div class="entry-reading">' +
+      '<div class="entry-reading-heading">Useful reading material</div>' +
+      '<ul class="reading-list">' + lis + '</ul>' +
+    '</div>'
+  );
+}
+
+function setMapDim(on) {
+  document.getElementById('map-dim').classList.toggle('visible', on);
+}
+
+async function initMap() {
+  const container = document.getElementById('map-container');
+  const w = container.offsetWidth || window.innerWidth;
+  const h = container.offsetHeight || window.innerHeight;
+
+  mapCtx = null;
+  countryPaths = null;
+
+  const svg = d3.select('#map-container').append('svg')
+    .attr('width', '100%')
+    .attr('height', '100%');
+
+  const projection = d3.geoNaturalEarth1()
+    .scale(w / MAP_SCALE_DIVISOR)
+    .translate([w / 2, h / 2 + 14]);
+
+  const path = d3.geoPath().projection(projection);
+
+  try {
+    const [world, csvRows] = await Promise.all([
+      d3.json('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'),
+      d3.csv(COUNTRY_CODES_CSV).catch(() => [])
+    ]);
+    ingestCountryCodeRows(csvRows);
+
+    const countries = topojson.feature(world, world.objects.countries);
+    const borders = topojson.mesh(world, world.objects.countries, (a, b) => a !== b);
+
+    const zoomG = svg.append('g').attr('class', 'map-zoom-layer');
+
+    const oceanRect = zoomG.append('rect')
+      .attr('x', -w)
+      .attr('y', -h)
+      .attr('width', w * 3)
+      .attr('height', h * 3)
+      .attr('fill', MAP_OCEAN_FILL);
+
+    const spherePath = zoomG.append('path')
+      .datum({ type: 'Sphere' })
+      .attr('d', path)
+      .attr('fill', MAP_OCEAN_FILL)
+      .attr('stroke', 'none');
+
+    const ghostG = zoomG.append('g').attr('class', 'map-land-ghost');
+    ghostG.selectAll('path')
+      .data(countries.features)
+      .enter().append('path')
+      .attr('d', path)
+      .attr('fill', MAP_GHOST_FILL)
+      .attr('stroke', 'none');
+
+    countryPaths = zoomG.append('g')
+      .attr('class', 'country-paths')
+      .selectAll('path')
+      .data(countries.features)
+      .enter().append('path')
+      .attr('d', path)
+      .attr('fill', MAP_LAND_NEUTRAL)
+      .attr('stroke', MAP_GEO_OUTLINE_STROKE)
+      .attr('stroke-width', MAP_GEO_OUTLINE_WIDTH)
+      .attr('data-id', d => String(d.id).padStart(3, '0'));
+
+    const bordersPath = zoomG.append('path')
+      .datum(borders)
+      .attr('d', path)
+      .attr('fill', 'none')
+      .attr('stroke', MAP_MESH_STROKE)
+      .attr('stroke-width', String(MAP_MESH_WIDTH))
+      .attr('stroke-linecap', 'round')
+      .attr('stroke-linejoin', 'round');
+
+    const sphereTopOutline = zoomG.append('path')
+      .datum({ type: 'Sphere' })
+      .attr('d', path)
+      .attr('fill', 'none')
+      .attr('stroke', MAP_SPHERE_RING_STROKE)
+      .attr('stroke-width', MAP_SPHERE_RING_WIDTH)
+      .attr('pointer-events', 'none')
+      .attr('class', 'map-sphere-outline');
+
+    const zoom = d3.zoom()
+      .scaleExtent([0.45, 14])
+      .on('zoom', event => {
+        zoomG.attr('transform', event.transform);
+      });
+    mapZoomBehavior = zoom;
+    svg.call(zoom);
+    wireMapZoomControls(svg, zoom);
+
+    mapCtx = {
+      svg,
+      zoomG,
+      projection,
+      path,
+      oceanRect,
+      spherePath,
+      sphereTopOutline,
+      ghostG,
+      bordersPath,
+      bordersMesh: borders,
+      focusBackdropRecessed: false,
+      countryFeatures: countries.features,
+      zoom
+    };
+
+    bindCountryTooltips();
+
+    document.getElementById('loading').style.display = 'none';
+  } catch (e) {
+    mapCtx = null;
+    countryPaths = null;
+    document.getElementById('loading').textContent = 'Unable to load map. Check your internet connection.';
+  }
+}
+
+function getAllIsoForLayer(layer) {
+  if (layer !== 'radar' && layer !== 'tasks' && layer !== 'watchpoints') return [];
+  const allIso = [];
+  DATA[layer].forEach(item => {
+    if (!item.iso || !item.iso.length) return;
+    item.iso.forEach(c => { if (!allIso.includes(c)) allIso.push(c); });
+  });
+  return allIso;
+}
+
+function clearMapRowFocusClass() {
+  document.querySelectorAll('#side-panel .entry-card.map-row-focus').forEach(c => c.classList.remove('map-row-focus'));
+}
+
+/** Repaint country paths for radar/tasks/watchpoints.
+ *  With a row expanded: focused ISOs use strongFill and a slightly darker coast stroke; everything else
+ *  (peers, grey neutrals, ocean, ghost, mesh) steps lighter so the whole map reads as one receded field.
+ *  @param {{ zoomAnimation?: boolean }} [opts] — set zoomAnimation false after refit/resize to snap zoom without replaying the focus transition. */
+function paintLayerOnMap(layer, opts) {
+  if (!countryPaths || (layer !== 'radar' && layer !== 'tasks' && layer !== 'watchpoints')) return;
+  const animateZoom = !opts || opts.zoomAnimation !== false;
+  const allIso = getAllIsoForLayer(layer);
+  const focusItem = focusedItemId ? DATA[layer].find(i => i.id === focusedItemId) : null;
+  const focusIso = focusItem && focusItem.iso ? focusItem.iso : null;
+  const hasRowFocus = focusIso && focusIso.length > 0;
+  syncMapFocusBackdrop(hasRowFocus);
+
+  const outlineFocus = MAP_GEO_OUTLINE_STROKE;
+  const outlineRecess = MAP_GEO_OUTLINE_STROKE_RECESS;
+  const neutralFill = hasRowFocus ? MAP_LAND_NEUTRAL_RECESS : MAP_LAND_NEUTRAL;
+
+  const radar = {
+    strongFill: '#1a7df0',
+    /** Same RGB as strongFill, transparent over ghost land — reads as a lighter blue, not a separate pastel. */
+    peerFill: 'rgba(26, 125, 240, 0.38)'
+  };
+  const tasks = {
+    strongFill: '#42b30a',
+    peerFill: 'rgba(66, 179, 10, 0.38)'
+  };
+  const watchpoints = {
+    strongFill: '#00b598',
+    peerFill: 'rgba(0, 181, 152, 0.38)'
+  };
+  const T = layer === 'radar' ? radar : layer === 'tasks' ? tasks : watchpoints;
+
+  countryPaths.each(function(d) {
+    const id = String(d.id).padStart(3, '0');
+    const el = d3.select(this);
+    if (!allIso.includes(id)) {
+      el.attr('fill', neutralFill)
+        .attr('stroke', hasRowFocus ? outlineRecess : outlineFocus)
+        .attr('stroke-width', MAP_GEO_OUTLINE_WIDTH);
+      return;
+    }
+    if (!focusIso) {
+      el.attr('fill', T.strongFill)
+        .attr('stroke', outlineFocus)
+        .attr('stroke-width', MAP_GEO_OUTLINE_WIDTH);
+      return;
+    }
+    if (focusIso.includes(id)) {
+      el.attr('fill', T.strongFill)
+        .attr('stroke', hasRowFocus ? MAP_GEO_OUTLINE_STROKE_SELECTION : outlineFocus)
+        .attr('stroke-width', MAP_GEO_OUTLINE_WIDTH);
+    } else {
+      el.attr('fill', T.peerFill)
+        .attr('stroke', hasRowFocus ? outlineRecess : outlineFocus)
+        .attr('stroke-width', MAP_GEO_OUTLINE_WIDTH);
+    }
+  });
+  const zoomMs = animateZoom ? MAP_FOCUS_ZOOM_MS : 0;
+  const resetMs = animateZoom ? MAP_ZOOM_RESET_MS : 0;
+  if (hasRowFocus) zoomMapToFocusIsos(focusIso, { duration: zoomMs });
+  else resetMapZoom(resetMs);
+}
+
+function clearShading() {
+  if (!countryPaths) return;
+  syncMapFocusBackdrop(false);
+  countryPaths
+    .attr('fill', MAP_LAND_NEUTRAL)
+    .attr('stroke', MAP_GEO_OUTLINE_STROKE)
+    .attr('stroke-width', MAP_GEO_OUTLINE_WIDTH);
+}
+
+function toggleLayer(layer) {
+  const panel = document.getElementById('side-panel');
+  const legend = document.getElementById('map-legend');
+
+  if (activeView === layer) {
+    activeView = null;
+    focusedItemId = null;
+    clearMapRowFocusClass();
+    document.getElementById('btn-radar').classList.remove('active-radar');
+    document.getElementById('btn-tasks').classList.remove('active-tasks');
+    document.getElementById('btn-watchpoints').classList.remove('active-watchpoints');
+    document.getElementById('panel-list').removeAttribute('data-active-layer');
+    clearShading();
+    document.getElementById('map-legend').classList.remove('visible');
+    document.getElementById('leg-radar').style.display = 'none';
+    document.getElementById('leg-tasks').style.display = 'none';
+    document.getElementById('leg-watchpoints').style.display = 'none';
+    panel.classList.remove('open');
+    setMapDim(false);
+    document.getElementById('panel-title').textContent = '';
+    const pc = document.getElementById('panel-count');
+    pc.textContent = '';
+    pc.className = '';
+    document.getElementById('tab-active').innerHTML = '';
+    document.getElementById('panel-tabs').style.display = 'none';
+    switchTab('active');
+    setTimeout(scheduleMapRebuild, 80);
+    return;
+  }
+
+  activeView = layer;
+  focusedItemId = null;
+  clearMapRowFocusClass();
+  clearShading();
+
+  document.getElementById('btn-radar').classList.toggle('active-radar', layer === 'radar');
+  document.getElementById('btn-tasks').classList.toggle('active-tasks', layer === 'tasks');
+  document.getElementById('btn-watchpoints').classList.toggle('active-watchpoints', layer === 'watchpoints');
+
+  document.getElementById('panel-list').setAttribute('data-active-layer', layer);
+  if (layer === 'radar' || layer === 'tasks' || layer === 'watchpoints') {
+    paintLayerOnMap(layer);
+  }
+
+  document.getElementById('panel-title').textContent =
+    layer === 'radar' ? 'On radar' : layer === 'tasks' ? 'Ongoing tasks' : 'Quarterly watchpoints';
+
+  const panelCountEl = document.getElementById('panel-count');
+  if (layer === 'watchpoints') {
+    panelCountEl.className = 'panel-count-summary';
+    panelCountEl.textContent = 'Q2 2026 watchpoints based on Q1 2026 vs Q4 2025 trend analysis';
+  } else {
+    panelCountEl.className = '';
+    panelCountEl.textContent = DATA[layer].length + ' entr' + (DATA[layer].length === 1 ? 'y' : 'ies');
+  }
+
+  document.getElementById('panel-tabs').style.display = layer === 'tasks' ? 'flex' : 'none';
+  switchTab('active');
+  if (layer === 'watchpoints') {
+    renderWatchpointsList();
+  } else {
+    renderList(layer);
+  }
+
+  panel.classList.add('open');
+  setMapDim(true);
+
+  document.getElementById('leg-radar').style.display = layer === 'radar' ? 'flex' : 'none';
+  document.getElementById('leg-tasks').style.display = layer === 'tasks' ? 'flex' : 'none';
+  document.getElementById('leg-watchpoints').style.display = layer === 'watchpoints' ? 'flex' : 'none';
+  legend.classList.add('visible');
+  setTimeout(scheduleMapRebuild, 280);
+}
+
+function renderWatchpointsList() {
+  const container = document.getElementById('tab-active');
+  container.innerHTML = '';
+  DATA.watchpoints.forEach(item => {
+    const pullsHtml = item.bullets.map(b => {
+      const ind = b.indicators.map(escapeHtml).join(', ');
+      return (
+        '<div class="wp-pull">' +
+          '<div class="wp-pull-handle" aria-hidden="true"></div>' +
+          '<div class="wp-pull-body">' +
+            '<div class="wp-indicators">' + ind + '</div>' +
+            '<div class="wp-summary">' + escapeHtml(b.text) + '</div>' +
+          '</div>' +
+        '</div>'
+      );
+    }).join('');
+
+    const card = document.createElement('div');
+    card.className = 'entry-card entry-card-watchpoint';
+    card.id = 'card-' + item.id;
+    card.innerHTML =
+      '<div class="entry-top">' +
+        '<div class="entry-name">' + escapeHtml(item.name) + '</div>' +
+        '<span class="pill pill-watchpoint">Q2 2026</span>' +
+        '<span class="expand-arrow entry-expand-btn" role="button" tabindex="0" aria-expanded="false" aria-label="Show or hide indicators">&#9660;</span>' +
+      '</div>' +
+      '<div class="entry-detail entry-detail-watchpoints">' + pullsHtml + '</div>';
+    card.tabIndex = 0;
+
+    const expandBtn = card.querySelector('.entry-expand-btn');
+
+    function toggleWatchpointDrilldown() {
+      const wasExpanded = card.classList.contains('expanded');
+      document.querySelectorAll('#tab-active .entry-card').forEach(c => {
+        c.classList.remove('expanded');
+        const eb = c.querySelector('.entry-expand-btn');
+        if (eb) eb.setAttribute('aria-expanded', 'false');
+      });
+      if (wasExpanded) {
+        if (focusedItemId === item.id) {
+          focusedItemId = null;
+          card.classList.remove('map-row-focus');
+        }
+        paintLayerOnMap('watchpoints');
+        return;
+      }
+      card.classList.add('expanded');
+      expandBtn.setAttribute('aria-expanded', 'true');
+      focusedItemId = item.id;
+      container.querySelectorAll('.entry-card').forEach(c => c.classList.remove('map-row-focus'));
+      card.classList.add('map-row-focus');
+      paintLayerOnMap('watchpoints');
+    }
+
+    card.addEventListener('click', ev => {
+      if (ev.target.closest && ev.target.closest('a')) return;
+      toggleWatchpointDrilldown();
+    });
+
+    expandBtn.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      e.stopPropagation();
+      toggleWatchpointDrilldown();
+    });
+
+    card.addEventListener('keydown', e => {
+      if (e.target !== card) return;
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        toggleWatchpointDrilldown();
+      }
+    });
+
+    container.appendChild(card);
+  });
+
+  const ctaWrap = document.createElement('div');
+  ctaWrap.className = 'wp-operational-cta';
+  const ctaLink = document.createElement('a');
+  ctaLink.className = 'wp-operational-cta-link';
+  ctaLink.href = '#';
+  ctaLink.setAttribute('aria-label', 'Operational Insights Dashboard — link not yet configured');
+  ctaLink.title = 'Placeholder — URL to be configured';
+  ctaLink.textContent = 'Click here to access the Operational Insights Dashboard';
+  ctaLink.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  ctaWrap.appendChild(ctaLink);
+  container.appendChild(ctaWrap);
+}
+
+function renderList(layer) {
+  const container = document.getElementById('tab-active');
+  container.innerHTML = '';
+  DATA[layer].forEach(item => {
+    const card = document.createElement('div');
+    card.className = 'entry-card';
+    card.id = 'card-' + item.id;
+    const pillCls = item.intensity === 'active' ? 'pill pill-active' : 'pill pill-light';
+    const pillTxt = item.intensity === 'active' ? 'Active monitoring' : 'Light monitoring';
+    const detailHtml = escapeHtml(item.detail) + readingBlock(item);
+    card.innerHTML =
+      '<div class="entry-top">' +
+        '<div class="entry-name">' + escapeHtml(item.name) + '</div>' +
+        '<span class="' + pillCls + '">' + pillTxt + '</span>' +
+        '<span class="expand-arrow entry-expand-btn" role="button" tabindex="0" aria-expanded="false" aria-label="Show or hide details">&#9660;</span>' +
+      '</div>' +
+      '<div class="entry-geo">' + escapeHtml(item.geo) + '</div>' +
+      '<div class="entry-detail">' + detailHtml + '</div>';
+    card.tabIndex = 0;
+
+    const expandBtn = card.querySelector('.entry-expand-btn');
+
+    /** Accordion drill-down + map focus: expanding pins this line on the map; collapsing clears pin if it was this row. */
+    function toggleEntryDrilldown() {
+      const wasExpanded = card.classList.contains('expanded');
+      document.querySelectorAll('#tab-active .entry-card').forEach(c => {
+        c.classList.remove('expanded');
+        const eb = c.querySelector('.entry-expand-btn');
+        if (eb) eb.setAttribute('aria-expanded', 'false');
+      });
+      if (wasExpanded) {
+        if (focusedItemId === item.id) {
+          focusedItemId = null;
+          card.classList.remove('map-row-focus');
+        }
+        paintLayerOnMap(layer);
+        return;
+      }
+      card.classList.add('expanded');
+      expandBtn.setAttribute('aria-expanded', 'true');
+      focusedItemId = item.id;
+      container.querySelectorAll('.entry-card').forEach(c => c.classList.remove('map-row-focus'));
+      card.classList.add('map-row-focus');
+      paintLayerOnMap(layer);
+    }
+
+    card.addEventListener('click', ev => {
+      if (ev.target.closest && ev.target.closest('a')) return;
+      toggleEntryDrilldown();
+    });
+
+    expandBtn.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      e.stopPropagation();
+      toggleEntryDrilldown();
+    });
+
+    card.addEventListener('keydown', e => {
+      if (e.target !== card) return;
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        toggleEntryDrilldown();
+      }
+    });
+
+    container.appendChild(card);
+  });
+}
+
+function switchTab(tab) {
+  document.querySelectorAll('.panel-tab').forEach((t, i) => {
+    t.classList.toggle('active', (i === 0 && tab === 'active') || (i === 1 && tab === 'completed'));
+  });
+  document.getElementById('tab-active').classList.toggle('active', tab === 'active');
+  document.getElementById('tab-completed').classList.toggle('active', tab === 'completed');
+  if (tab === 'completed' && (activeView === 'radar' || activeView === 'tasks')) {
+    focusedItemId = null;
+    clearMapRowFocusClass();
+    paintLayerOnMap(activeView);
+  }
+}
+
+window.addEventListener('resize', () => scheduleMapRebuild());
+
+updateHomeLayerCounts();
+
+initMap().then(() => {
+  activeView = null;
+  focusedItemId = null;
+  clearShading();
+  resetMapZoom(0);
+  document.getElementById('side-panel').classList.remove('open');
+  setMapDim(false);
+  document.getElementById('map-legend').classList.remove('visible');
+});
+</script>
+</body>
+</html>
